@@ -1,221 +1,149 @@
-# (C) British Crown Copyright 2022, Met Office.
-# Please see LICENSE.rst for license details.
 import argparse
 import glob
 import json
 import os
 import textwrap
-
 from datetime import datetime
+import pandas as pd
+import networkx as nx
+import xml.etree.ElementTree as ET
 
-from constants import (HEADINGS, HEADER_ROW_TEMPLATE, ROW_TEMPLATE, CELL_TEMPLATE, TABLE_TEMPLATE, BGCOLORS, HEADER,
-                       FOOTER, WRAP_SIZE)
+class MIPTableViewer:
+    def __init__(self, tables_directory=None, prefix=None, output_directory=None):
+        self.tables_directory = tables_directory
+        self.prefix = prefix
+        self.output_directory = output_directory
 
+    def get_mip_tables(self):
+        glob_string = os.path.join(self.tables_directory, '{}_*.json'.format(self.prefix))
+        mip_table_json = glob.glob(glob_string)
+        tables_with_variables = {}
+        excluded_tables = ['grids', 'formula_terms', 'coordinate', 'CV']
 
-def parse_args():
-    """
-    Parse the user arguments.
+        for table_path in mip_table_json:
+            table_name = os.path.basename(table_path).split('_')[1].split('.json')[0]
+            with open(table_path, 'r') as f:
+                table_json = json.load(f)
 
-    Returns
-    -------
-    args : argparse.Namespace
-        User arguments.
-    """
+            if "variable_entry" in table_json and table_name not in excluded_tables:
+                tables_with_variables[table_name] = table_path
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-t',
-                        '--tables_directory',
-                        help='Directory of the mip tables to generate a HTML page for.',
-                        type=str,
-                        required=True)
-    parser.add_argument('-p',
-                        '--prefix',
-                        help='Prefix used on the mip table json files.',
-                        type=str,
-                        required=True)
-    parser.add_argument('-o',
-                        '--output_directory',
-                        help='Output location of the generated HTML page.',
-                        type=str,
-                        required=True)
-    args = parser.parse_args()
+        return tables_with_variables
 
-    return args
-
-
-def get_mip_tables(tables_directory, prefix):
-    """
-    Loop over all json files in a directory matching {prefix}_*.json and add their
-    namd a filepath to a dictionary if they contain a "variable_entry" key.
-
-    Parameters
-    ----------
-    tables_directory : str
-        Path to the mip tables.
-    prefix : str
-        Prefix used on table josn files.
-    Returns
-    -------
-    tables_with_variables : dict
-        A dictionary with table name as key and path to the table as value.
-    """
-    glob_string = os.path.join(tables_directory, '{}_*.json'.format(prefix))
-    mip_table_json = glob.glob(glob_string)
-
-    tables_with_variables = {}
-
-    excluded_tables = ['grids', 'formula_terms', 'coordinate', 'CV']
-
-    for table_path in mip_table_json:
-        table_name = os.path.basename(table_path).split('_')[1].split('.json')[0]
-        with open(table_path, 'r') as f:
-            table_json = json.loads(f.read())
-
-        if "variable_entry" in table_json.keys() and table_name not in excluded_tables:
-            tables_with_variables[table_name] = table_path
-
-    return tables_with_variables
-
-
-def extract_table_data(tables):
-    """
-    Using the table name and filepath mappings, read the data for each entry in "variable_entry"
-    and extract the relevant values for the headings and save them as a list.
-
-    Parameters
-    ----------
-    tables : dict
-        A dictionary with table name as key and path to the table as value.
-    Returns
-    -------
-    tables_data : list
-        List of lists where each sublist contains a list representing a variable and the
-        metadata from the miptable entry.
-    """
-    table_data = [HEADINGS]
-
-    for table, table_path in tables.items():
-        with open(table_path, 'r') as f:
-            variable_entry = json.loads(f.read())["variable_entry"]
+    def extract_table_data(self, tables):
+        table_data = []
+        for table, table_path in tables.items():
+            with open(table_path, 'r') as f:
+                variable_entry = json.load(f).get("variable_entry", {})
             for variable, metadata in variable_entry.items():
-                table_data.append([table,
-                                   variable,
-                                   metadata['frequency'],
-                                   metadata['dimensions'],
-                                   metadata['standard_name'],
-                                   metadata['long_name'],
-                                   metadata['comment'],
-                                   metadata['modeling_realm'],
-                                   metadata['units'],
-                                   metadata['positive'],
-                                   metadata['cell_methods'],
-                                   metadata['cell_measures']])
+                table_data.append(
+                    [table, variable, metadata.get('frequency', ''), metadata.get('dimensions', ''),
+                     metadata.get('standard_name', ''), metadata.get('long_name', ''),
+                     metadata.get('comment', ''), metadata.get('modeling_realm', ''),
+                     metadata.get('units', ''), metadata.get('positive', ''),
+                     metadata.get('cell_methods', ''), metadata.get('cell_measures', '')])
 
-    return table_data
+        return table_data
 
+    def wrap_text(self, input_text, wrap_size):
+        if len(input_text) > wrap_size:
+            wrapped_input_text = textwrap.wrap(input_text, width=wrap_size, break_long_words=True)
+            wrapped_input_text = "\n".join(wrapped_input_text)
+            return wrapped_input_text
+        else:
+            return input_text
 
-def wrap_standard_name(input_text):
-    """
-    Wraps the input text of a standard name.
+    def create_dataframe(self, table_data):
+        headings = ['Table', 'Variable', 'Frequency', 'Dimensions', 'Standard Name', 'Long Name',
+                    'Comment', 'Modeling Realm', 'Units', 'Positive', 'Cell Methods', 'Cell Measures']
+        df = pd.DataFrame(table_data, columns=headings)
+        return df
 
-    Parameters
-    ----------
-    input_text : str
-        The standard name string to be wrapped.
-    Returns
-    -------
-    wrapped_input_text : str
-        The standard name string wrapped if need.
-    """
+    def create_graph(self, table_data):
+        G = nx.Graph()
 
-    if len(input_text) > WRAP_SIZE:
-        wrapped_input_text = ' '.join(input_text.split('_'))
-        wrapped_input_text = textwrap.wrap(wrapped_input_text, width=WRAP_SIZE, break_long_words=False)
-        wrapped_input_text = "\n_".join(["_".join(x.split()) for x in wrapped_input_text])
-        return wrapped_input_text
-    else:
-        return input_text
+        for row in table_data:
+            table = row[0]
+            variable = row[1]
+            modeling_realm = row[7]
+            metadata = row[2:]
 
+            G.add_node(table, type='table')
+            G.add_node(variable, type='variable', metadata=dict(zip(['Frequency', 'Dimensions', 'Standard Name', 'Long Name',
+                                                                    'Comment', 'Modeling Realm', 'Units', 'Positive',
+                                                                    'Cell Methods', 'Cell Measures'], metadata)))
+            G.add_node(modeling_realm, type='modeling_realm')
 
-def wrap_comment(input_text):
-    """
-    Wraps the input text of a comment.
+            G.add_edge(table, variable)
+            G.add_edge(variable, modeling_realm)
 
-    Parameters
-    ----------
-    input_text : str
-        The standard name string to be wrapped.
-    Returns
-    -------
-    wrapped_input_text : str
-        The standard name string wrapped if need.
-    """
-
-    if len(input_text) > WRAP_SIZE:
-        wrapped_input_text = textwrap.wrap(input_text, width=WRAP_SIZE, break_long_words=True)
-        wrapped_input_text = "\n".join(wrapped_input_text)
-        return wrapped_input_text
-    else:
-        return input_text
+        return G
 
 
-def display_data(data, prefix):
-    """
-    Returns a HTML document with a table for displaying the supplied data.
-    Standard name and comment fields need separate formatting.
+    def output_to_graphx(self):
+        tables = self.get_mip_tables()
+        table_data = self.extract_table_data(tables)
+        G = self.create_graph(table_data)
+        return G
 
-    Parameters
-    ----------
-    data : list
-        Lists of lists where each sublist is a mip table variable.
-    prefix : str
-        The name of the mip tables.
-    Returns
-    -------
-    html : str
-        A string representing a HTML document that can be written out.
-    """
+    def save_gexf_file(self, G, filepath):
+        root = ET.Element('gexf', xmlns='http://www.gexf.net/1.3', version='1.3')
+        graph = ET.SubElement(root, 'graph', mode='static', defaultedgetype='directed')
 
-    html = ''
-    for i, row in enumerate(data):
-        cell_type = 'th' if i == 0 else 'td'
-        row_html = ''
-        if i == 0:
-            for entry in row:
-                row_html += CELL_TEMPLATE.format(cell_type, entry)
-            html += HEADER_ROW_TEMPLATE.format(BGCOLORS[i % len(BGCOLORS)], row_html)
-            continue
-        for x, entry in enumerate(row):
-            if x == 4:
-                row_html += CELL_TEMPLATE.format(cell_type, wrap_standard_name(entry))
-            elif x == 6:
-                row_html += CELL_TEMPLATE.format(cell_type, wrap_comment(entry))
-            else:
-                row_html += CELL_TEMPLATE.format(cell_type, entry)
+        # Add attributes
+        attributes = G.nodes(data='metadata')
+        attributes = list(attributes)
+        attribute_names = list(attributes[0][1].keys())
 
-        html += ROW_TEMPLATE.format(BGCOLORS[i % len(BGCOLORS)], row_html)
+        attributes_element = ET.SubElement(graph, 'attributes', mode='static')
 
-    table = TABLE_TEMPLATE.format(html)
-    timestamp = datetime.now().strftime('%H:%M %d/%m/%Y')
-    html = (HEADER +
-            '<h2>{} MIP Tables (Generated {})</h2>'.format(prefix, timestamp) +
-            '<p>Use the search box to filter rows, e.g. search for "tas" or "Amon tas".</p>' +
-            table +
-            FOOTER)
+        for i, attr_name in enumerate(attribute_names):
+            ET.SubElement(attributes_element, 'attribute', {'id': str(i), 'title': attr_name, 'type': 'string'})
 
-    return html
+        for node, attributes in G.nodes(data=True):
+            node_id = node.replace(' ', '_')
+            node_label = node
+            node_element = ET.SubElement(graph, 'node', id=node_id, label=node_label)
+
+            if 'metadata' in attributes:
+                metadata = attributes['metadata']
+                attvalues_element = ET.SubElement(node_element, 'attvalues')
+
+                for i, attr_name in enumerate(attribute_names):
+                    attr_value = metadata.get(attr_name, 'none')
+                    ET.SubElement(attvalues_element, 'attvalue', {'for': str(i), 'value': str(attr_value)})
+
+        for source, target in G.edges():
+            source_id = source.replace(' ', '_')
+            target_id = target.replace(' ', '_')
+            ET.SubElement(graph, 'edge', source=source_id, target=target_id)
+
+        tree = ET.ElementTree(root)
+        tree.write(filepath, encoding='utf-8', xml_declaration=True)
+
+    def output(self, kind='html'):
+        output_filepath = os.path.join(self.output_directory, f'mip_table_viewer_{self.prefix}.{kind}')
+        if kind == 'csv':
+            df = self.output_to_dataframe()
+            self.save_dataframe(df, output_filepath)
+        elif kind == 'gexf':
+            G = self.output_to_graphx()
+            self.save_gexf_file(G, output_filepath)
+        else:
+            html = self.output_to_html()
+            self.save_html(html, output_filepath)
 
 
 if __name__ == '__main__':
-    arguments = parse_args()
-    tables_directory = arguments.tables_directory
-    prefix = arguments.prefix
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-t', '--tables_directory', help='Directory of the mip tables to generate an HTML page for.', type=str, required=False)
+    parser.add_argument('-p', '--prefix', help='Prefix used on the mip table JSON files.', type=str, required=False)
+    parser.add_argument('-o', '--output_directory', help='Output location of the generated HTML page.', type=str, required=False)
+    args = parser.parse_args()
 
-    tables = get_mip_tables(tables_directory, prefix)
-    table_data = extract_table_data(tables)
-    html = display_data(table_data, prefix)
+    tables_directory = args.tables_directory or '../Tables'
+    prefix = args.prefix or 'ARISE'
+    output_directory = args.output_directory or './'
 
-    output_filepath = os.path.join(arguments.output_directory, 'mip_table_viewer_{}.html'.format(prefix))
-
-    with open(output_filepath, 'w') as f:
-        f.write(html)
+    mip_table_viewer = MIPTableViewer(tables_directory, prefix, output_directory)
+    mip_table_viewer.output('gexf')
